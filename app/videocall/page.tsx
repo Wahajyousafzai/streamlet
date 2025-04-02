@@ -413,6 +413,62 @@ export default function Home() {
     )
   }
 
+  // Add this helper function after the preloadImages function
+  const mirrorVideoStream = (inputStream: MediaStream): MediaStream => {
+    // Create a video element to display the input stream
+    const videoElement = document.createElement("video")
+    videoElement.srcObject = inputStream
+    videoElement.autoplay = true
+    videoElement.muted = true
+
+    // Get video dimensions
+    const videoTrack = inputStream.getVideoTracks()[0]
+    const settings = videoTrack.getSettings()
+    const width = settings.width || 640
+    const height = settings.height || 480
+
+    // Create a canvas to draw the mirrored video
+    const canvas = document.createElement("canvas")
+    canvas.width = width
+    canvas.height = height
+    const ctx = canvas.getContext("2d")
+
+    if (!ctx) {
+      console.error("Could not get canvas context")
+      return inputStream // Return original stream if we can't get context
+    }
+
+    // Start drawing the video to the canvas with horizontal flip
+    const drawVideo = () => {
+      if (videoElement.readyState === videoElement.HAVE_ENOUGH_DATA) {
+        // Clear the canvas
+        ctx.clearRect(0, 0, canvas.width, canvas.height)
+
+        // Flip horizontally
+        ctx.save()
+        ctx.scale(-1, 1)
+        ctx.drawImage(videoElement, -canvas.width, 0, canvas.width, canvas.height)
+        ctx.restore()
+      }
+
+      requestAnimationFrame(drawVideo)
+    }
+
+    videoElement.addEventListener("loadedmetadata", () => {
+      drawVideo()
+    })
+
+    // Create a new stream from the canvas
+    const mirroredStream = canvas.captureStream(30) // 30fps
+
+    // Add audio tracks from the original stream
+    inputStream.getAudioTracks().forEach((track) => {
+      mirroredStream.addTrack(track)
+    })
+
+    return mirroredStream
+  }
+
   // Load background image when selected
   useEffect(() => {
     // Preload the selected background
@@ -508,8 +564,15 @@ export default function Home() {
     }
 
     try {
-      const videoTrack = newStream.getVideoTracks()[0]
-      const audioTrack = newStream.getAudioTracks()[0]
+      // Mirror the stream if using front camera
+      let streamToSend = newStream
+      if (currentCameraName === "Front Camera") {
+        console.log("Using front camera - mirroring stream update")
+        streamToSend = mirrorVideoStream(newStream)
+      }
+
+      const videoTrack = streamToSend.getVideoTracks()[0]
+      const audioTrack = streamToSend.getAudioTracks()[0]
 
       if (!videoTrack) {
         console.error("No video track in new stream")
@@ -594,8 +657,14 @@ export default function Home() {
       }
 
       // Use the processed stream if background removal is enabled
-      const finalStream =
+      let finalStream =
         backgroundRemovalEnabled && processedStreamRef.current ? processedStreamRef.current : streamToUse
+
+      // Mirror the stream if using front camera
+      if (currentCameraName === "Front Camera") {
+        console.log("Using front camera - mirroring outgoing stream")
+        finalStream = mirrorVideoStream(finalStream)
+      }
 
       // Log audio tracks
       const audioTracks = finalStream.getAudioTracks()
@@ -611,7 +680,7 @@ export default function Home() {
 
       console.log("🎥 Setting local video stream...")
       if (localVideoRef.current) {
-        localVideoRef.current.srcObject = finalStream
+        localVideoRef.current.srcObject = streamToUse // Use original stream for local display
       }
 
       console.log("📞 Calling peer:", connectedPeerId)
@@ -621,7 +690,7 @@ export default function Home() {
         throw new Error("Peer connection is no longer valid")
       }
 
-      // Make the call and check if we got a valid call object
+      // Make the call with the mirrored stream if front camera
       const call = peer.call(connectedPeerId, finalStream)
 
       if (!call) {
@@ -882,6 +951,114 @@ export default function Home() {
     }
   }
 
+  // Also modify the handleIncomingCall function to mirror the stream when using front camera
+  const handleIncomingCall = async (incomingCall: MediaConnection) => {
+    console.log("📞 Incoming call from:", incomingCall.peer)
+    setCallStatus("connecting")
+    setIsLoading(true)
+
+    try {
+      // Make sure we have a valid local stream before answering
+      let streamToUse = localStream
+
+      // If we don't have a local stream yet, try to get one using the hook's startStream
+      if (!streamToUse && startStream) {
+        console.log("No local stream available, attempting to create one...")
+        const currentDevice = devices && devices.length > 0 ? devices[currentDeviceIndex]?.deviceId : undefined
+        streamToUse = await startStream(currentDevice || "", true)
+
+        if (streamToUse) {
+          console.log("Successfully created stream for incoming call")
+          setLocalStream(streamToUse)
+        } else {
+          throw new Error("Failed to create camera stream for incoming call")
+        }
+      }
+
+      if (!streamToUse) {
+        throw new Error("No camera stream available")
+      }
+
+      // Use the processed stream if background removal is enabled
+      let finalStream =
+        backgroundRemovalEnabled && processedStreamRef.current ? processedStreamRef.current : streamToUse
+
+      // Mirror the stream if using front camera
+      if (currentCameraName === "Front Camera") {
+        console.log("Using front camera - mirroring outgoing stream")
+        finalStream = mirrorVideoStream(finalStream)
+      }
+
+      // Check if we have audio tracks
+      const audioTracks = finalStream.getAudioTracks()
+      console.log(`Audio tracks in stream: ${audioTracks.length}`)
+
+      if (audioTracks.length > 0) {
+        // Ensure audio track is enabled unless explicitly muted
+        audioTracks[0].enabled = !isAudioMuted
+        console.log(`Audio track enabled: ${!isAudioMuted}`)
+      }
+
+      // Set the connected peer ID
+      setConnectedPeerId(incomingCall.peer)
+
+      // Answer the call with our stream
+      incomingCall.answer(finalStream)
+      setActiveCall(incomingCall) // Store the call reference
+      console.log("✅ Auto-Answered the call")
+
+      incomingCall.on("stream", (incomingStream: MediaStream) => {
+        console.log("🎬 Receiving Remote Video Stream:", incomingStream)
+
+        // Log audio tracks in incoming stream
+        const incomingAudioTracks = incomingStream.getAudioTracks()
+        console.log(`Incoming stream audio tracks: ${incomingAudioTracks.length}`)
+
+        setRemoteStream(incomingStream)
+        setCallStatus("connected")
+        setIsLoading(false)
+      })
+
+      incomingCall.on("close", () => {
+        console.log("❌ Call Ended")
+        setRemoteStream(null)
+        setCallStatus("idle")
+      })
+    } catch (error) {
+      console.error("Error handling incoming call:", error)
+      setCallStatus("idle")
+      setIsLoading(false)
+      toast({
+        title: "Call Error",
+        description: "Could not answer the call. Please check your camera and microphone.",
+        variant: "destructive",
+      })
+    }
+  }
+
+  // Update the useEffect that handles incoming calls to use our new handleIncomingCall function
+  useEffect(() => {
+    if (!peer) return
+
+    peer.on("call", handleIncomingCall)
+
+    return () => {
+      peer.off("call", handleIncomingCall)
+    }
+  }, [
+    peer,
+    isAudioMuted,
+    toast,
+    localStream,
+    startStream,
+    backgroundRemovalEnabled,
+    selectedBackground,
+    devices,
+    currentDeviceIndex,
+    setConnectedPeerId,
+    currentCameraName, // Add currentCameraName as a dependency
+  ])
+
   // Show loading state while camera is initializing
   if (!isInitialized) {
     return (
@@ -908,7 +1085,12 @@ export default function Home() {
             {/* Remote Video */}
             <div className="w-full h-full relative">
               {remoteStream ? (
-                <video ref={remoteVideoRef} autoPlay playsInline className={`w-full h-full object-cover ${currentCameraName === "Front Camera" ? "scale-x-[-1]" : ""}`} />
+                <video
+                  ref={remoteVideoRef}
+                  autoPlay
+                  playsInline
+                  className={`w-full h-full object-cover ${currentCameraName === "Front Camera" ? "scale-x-[-1]" : ""}`}
+                />
               ) : (
                 <div
                   className="flex flex-col items-center justify-center w-full h-full border border-white/30 rounded-2xl
@@ -927,7 +1109,13 @@ export default function Home() {
                 dragElastic={0.2}
                 className="absolute top-4 left-4 w-36 lg:w-1/6 xl:w-44 aspect-4/3 rounded-lg overflow-hidden shadow-md"
               >
-                <video ref={localVideoRef} autoPlay playsInline muted className={`w-full h-full object-cover ${currentCameraName === "Front Camera" ? "scale-x-[-1]" : ""} ${devices.length <= 1 ? "scale-x-[-1]" : ""}`}/>
+                <video
+                  ref={localVideoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className={`w-full h-full object-cover ${currentCameraName === "Front Camera" ? "scale-x-[-1]" : ""}`}
+                />
                 <div className="absolute inset-0 pointer-events-none">
                   <span className="absolute bg-black/20 text-white bg-opacity-10 px-2 rounded text-xs md:text-sm bottom-1 left-1">
                     You

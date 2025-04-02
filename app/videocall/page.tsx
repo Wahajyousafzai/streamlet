@@ -414,59 +414,118 @@ export default function Home() {
   }
 
   // Add this helper function after the preloadImages function
-  const mirrorVideoStream = (inputStream: MediaStream): MediaStream => {
-    // Create a video element to display the input stream
-    const videoElement = document.createElement("video")
-    videoElement.srcObject = inputStream
-    videoElement.autoplay = true
-    videoElement.muted = true
-
-    // Get video dimensions
-    const videoTrack = inputStream.getVideoTracks()[0]
-    const settings = videoTrack.getSettings()
-    const width = settings.width || 640
-    const height = settings.height || 480
-
-    // Create a canvas to draw the mirrored video
-    const canvas = document.createElement("canvas")
-    canvas.width = width
-    canvas.height = height
-    const ctx = canvas.getContext("2d")
-
-    if (!ctx) {
-      console.error("Could not get canvas context")
-      return inputStream // Return original stream if we can't get context
+  const shouldMirrorStream = (): boolean => {
+    // If it's explicitly a front camera, mirror it
+    if (currentCameraName === "Front Camera") {
+      return true
     }
 
-    // Start drawing the video to the canvas with horizontal flip
-    const drawVideo = () => {
-      if (videoElement.readyState === videoElement.HAVE_ENOUGH_DATA) {
-        // Clear the canvas
-        ctx.clearRect(0, 0, canvas.width, canvas.height)
+    // For devices with only one camera (like laptops), assume it's front-facing
+    if (!hasMultipleCameras) {
+      return true
+    }
 
-        // Flip horizontally
-        ctx.save()
-        ctx.scale(-1, 1)
-        ctx.drawImage(videoElement, -canvas.width, 0, canvas.width, canvas.height)
-        ctx.restore()
+    // For other cases, check if the camera label contains keywords suggesting it's front-facing
+    if (devices && devices.length > 0) {
+      const currentDevice = devices[currentDeviceIndex]
+      if (currentDevice && currentDevice.label) {
+        const label = currentDevice.label.toLowerCase()
+        return label.includes("front") || label.includes("user") || label.includes("face")
+      }
+    }
+
+    return false
+  }
+
+  // Replace the mirrorVideoStream function with this improved version
+  const mirrorVideoStream = (inputStream: MediaStream): Promise<MediaStream> => {
+    // If we shouldn't mirror this stream, return it as is
+    if (!shouldMirrorStream()) {
+      return Promise.resolve(inputStream)
+    }
+
+    console.log("Creating mirrored stream (optimized)")
+
+    // For local display, we'll use CSS transform instead of canvas processing
+    // This function is only for outgoing streams that need mirroring
+
+    try {
+      // Create a video element to display the input stream
+      const videoElement = document.createElement("video")
+      videoElement.srcObject = inputStream
+      videoElement.autoplay = true
+      videoElement.muted = true
+      videoElement.playsInline = true
+
+      // Get video dimensions from the track settings
+      const videoTrack = inputStream.getVideoTracks()[0]
+      const settings = videoTrack.getSettings()
+      const width = settings.width || 640
+      const height = settings.height || 480
+
+      // Create a canvas with the same dimensions
+      const canvas = document.createElement("canvas")
+      canvas.width = width
+      canvas.height = height
+      const ctx = canvas.getContext("2d", { alpha: false }) // Disable alpha for performance
+
+      if (!ctx) {
+        console.error("Could not get canvas context")
+        return Promise.resolve(inputStream) // Return original stream if we can't get context
       }
 
-      requestAnimationFrame(drawVideo)
+      // Wait for video to be ready
+      return new Promise<MediaStream>((resolve) => {
+        videoElement.onloadedmetadata = () => {
+          videoElement.play().catch((err) => console.error("Error playing video:", err))
+
+          // Create a stream with lower framerate for better performance
+          const mirroredStream = canvas.captureStream(20) // 20fps instead of 30fps
+
+          // Add audio tracks from the original stream
+          inputStream.getAudioTracks().forEach((track) => {
+            try {
+              mirroredStream.addTrack(track)
+            } catch (err) {
+              console.error("Error adding audio track:", err)
+            }
+          })
+
+          // Use requestAnimationFrame for better performance
+          const draw = () => {
+            if (videoElement.readyState >= 2) {
+              // Flip horizontally - only draw when video has data
+              ctx.clearRect(0, 0, canvas.width, canvas.height)
+              ctx.save()
+              ctx.scale(-1, 1)
+              ctx.drawImage(videoElement, -canvas.width, 0, canvas.width, canvas.height)
+              ctx.restore()
+            }
+
+            // Only continue animation if the stream is active
+            if (mirroredStream.active) {
+              requestAnimationFrame(draw)
+            }
+          }
+
+          // Start drawing
+          draw()
+
+          resolve(mirroredStream)
+        }
+
+        // Fallback if metadata doesn't load within 1 second
+        setTimeout(() => {
+          if (!videoElement.readyState) {
+            console.warn("Video metadata loading timeout, using original stream")
+            resolve(inputStream)
+          }
+        }, 1000)
+      })
+    } catch (err) {
+      console.error("Error in mirrorVideoStream:", err)
+      return Promise.resolve(inputStream) // Return original stream on error
     }
-
-    videoElement.addEventListener("loadedmetadata", () => {
-      drawVideo()
-    })
-
-    // Create a new stream from the canvas
-    const mirroredStream = canvas.captureStream(30) // 30fps
-
-    // Add audio tracks from the original stream
-    inputStream.getAudioTracks().forEach((track) => {
-      mirroredStream.addTrack(track)
-    })
-
-    return mirroredStream
   }
 
   // Load background image when selected
@@ -564,11 +623,11 @@ export default function Home() {
     }
 
     try {
-      // Mirror the stream if using front camera
+      // Mirror the stream if it should be mirrored
       let streamToSend = newStream
-      if (currentCameraName === "Front Camera") {
-        console.log("Using front camera - mirroring stream update")
-        streamToSend = mirrorVideoStream(newStream)
+      if (shouldMirrorStream()) {
+        console.log("Mirroring stream for remote peer")
+        streamToSend = await mirrorVideoStream(newStream)
       }
 
       const videoTrack = streamToSend.getVideoTracks()[0]
@@ -660,10 +719,16 @@ export default function Home() {
       let finalStream =
         backgroundRemovalEnabled && processedStreamRef.current ? processedStreamRef.current : streamToUse
 
-      // Mirror the stream if using front camera
-      if (currentCameraName === "Front Camera") {
-        console.log("Using front camera - mirroring outgoing stream")
-        finalStream = mirrorVideoStream(finalStream)
+      // Set local video display - always use original stream with CSS mirroring
+      console.log("🎥 Setting local video stream...")
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = streamToUse
+      }
+
+      // Mirror the stream if needed for the outgoing call
+      if (shouldMirrorStream()) {
+        console.log("Mirroring outgoing stream for remote peer")
+        finalStream = await mirrorVideoStream(finalStream)
       }
 
       // Log audio tracks
@@ -678,11 +743,6 @@ export default function Home() {
         console.warn("No audio tracks in outgoing stream!")
       }
 
-      console.log("🎥 Setting local video stream...")
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = streamToUse // Use original stream for local display
-      }
-
       console.log("📞 Calling peer:", connectedPeerId)
 
       // Check if peer is still valid before making the call
@@ -690,7 +750,7 @@ export default function Home() {
         throw new Error("Peer connection is no longer valid")
       }
 
-      // Make the call with the mirrored stream if front camera
+      // Make the call with the mirrored stream if needed
       const call = peer.call(connectedPeerId, finalStream)
 
       if (!call) {
@@ -706,6 +766,14 @@ export default function Home() {
         // Log audio tracks in incoming stream
         const incomingAudioTracks = incomingStream.getAudioTracks()
         console.log(`Incoming stream audio tracks: ${incomingAudioTracks.length}`)
+
+        // Log video tracks in incoming stream
+        const incomingVideoTracks = incomingStream.getVideoTracks()
+        console.log(`Incoming stream video tracks: ${incomingVideoTracks.length}`)
+
+        if (incomingVideoTracks.length === 0) {
+          console.warn("No video tracks in incoming stream!")
+        }
 
         setRemoteStream(incomingStream)
         setCallStatus("connected")
@@ -983,10 +1051,15 @@ export default function Home() {
       let finalStream =
         backgroundRemovalEnabled && processedStreamRef.current ? processedStreamRef.current : streamToUse
 
-      // Mirror the stream if using front camera
-      if (currentCameraName === "Front Camera") {
-        console.log("Using front camera - mirroring outgoing stream")
-        finalStream = mirrorVideoStream(finalStream)
+      // Set local video display - always use original stream with CSS mirroring
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = streamToUse
+      }
+
+      // Mirror the stream if needed for the outgoing call
+      if (shouldMirrorStream()) {
+        console.log("Mirroring incoming call stream for remote peer")
+        finalStream = await mirrorVideoStream(finalStream)
       }
 
       // Check if we have audio tracks
@@ -1007,12 +1080,20 @@ export default function Home() {
       setActiveCall(incomingCall) // Store the call reference
       console.log("✅ Auto-Answered the call")
 
-      incomingCall.on("stream", (incomingStream: MediaStream) => {
+      incomingCall.on("stream", (incomingStream) => {
         console.log("🎬 Receiving Remote Video Stream:", incomingStream)
 
         // Log audio tracks in incoming stream
         const incomingAudioTracks = incomingStream.getAudioTracks()
         console.log(`Incoming stream audio tracks: ${incomingAudioTracks.length}`)
+
+        // Log video tracks in incoming stream
+        const incomingVideoTracks = incomingStream.getVideoTracks()
+        console.log(`Incoming stream video tracks: ${incomingVideoTracks.length}`)
+
+        if (incomingVideoTracks.length === 0) {
+          console.warn("No video tracks in incoming stream!")
+        }
 
         setRemoteStream(incomingStream)
         setCallStatus("connected")
@@ -1089,12 +1170,12 @@ export default function Home() {
                   ref={remoteVideoRef}
                   autoPlay
                   playsInline
-                  className={`w-full h-full object-cover ${currentCameraName === "Front Camera" ? "scale-x-[-1]" : ""}`}
+                  className={`w-full h-full object-cover ${shouldMirrorStream() ? "scale-x-[-1]" : ""}`}
                 />
               ) : (
                 <div
                   className="flex flex-col items-center justify-center w-full h-full border border-white/30 rounded-2xl
-                  bg-white/10 backdrop-blur-md transition-all hover:backdrop-blur-lg"
+                bg-white/10 backdrop-blur-md transition-all hover:backdrop-blur-lg"
                 >
                   <div className="flex items-center justify-center w-20 h-20 mb-4 rounded-full bg-black">
                     <VideoIcon className="w-8 h-8 text-white" />
@@ -1114,7 +1195,7 @@ export default function Home() {
                   autoPlay
                   playsInline
                   muted
-                  className={`w-full h-full object-cover ${currentCameraName === "Front Camera" ? "scale-x-[-1]" : ""}`}
+                  className={`w-full h-full object-cover ${shouldMirrorStream() ? "scale-x-[-1]" : ""}`}
                 />
                 <div className="absolute inset-0 pointer-events-none">
                   <span className="absolute bg-black/20 text-white bg-opacity-10 px-2 rounded text-xs md:text-sm bottom-1 left-1">

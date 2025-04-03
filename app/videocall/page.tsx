@@ -52,6 +52,17 @@ export default function Home() {
   const [isPageVisible, setIsPageVisible] = useState(true)
   const keepAliveIntervalRef = useRef<NodeJS.Timeout | null>(null)
 
+  // Add this ref at the top of the component with the other refs
+  const screenShareRefsRef = useRef<{
+    originalStream?: MediaStream
+    video?: HTMLVideoElement
+    canvas?: HTMLCanvasElement
+    drawingLoopId?: NodeJS.Timeout
+  } | null>(null)
+
+  // Add this ref at the top of the component with the other refs
+  const aggressivePreventionRef = useRef<{ cleanup: () => void } | null>(null)
+
   // Use the camera switch hook
   const {
     stream: cameraStream,
@@ -733,8 +744,53 @@ export default function Home() {
     }
   }, [backgroundRemovalEnabled, localStream, handleBackgroundRemovalToggle])
 
-  // Add this new function before the startCall function
-  // Start screen sharing
+  // Add this function after the startScreenShare function
+  const applyAggressiveBackgroundPrevention = () => {
+    console.log("Applying aggressive background prevention techniques")
+
+    // Store original values to restore later
+    const originalHidden = Object.getOwnPropertyDescriptor(Document.prototype, "hidden")
+    const originalVisibilityState = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState")
+
+    // Override document.hidden
+    Object.defineProperty(document, "hidden", { value: false, configurable: true })
+
+    // Override document.visibilityState
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true })
+
+    // Create interval to dispatch fake events
+    const keepAliveInterval = setInterval(() => {
+      // Dispatch fake visibility and focus events to keep the page active
+      document.dispatchEvent(new Event("visibilitychange"))
+      window.dispatchEvent(new Event("focus"))
+
+      // Log to console occasionally
+      if (Math.random() < 0.1) {
+        // Only log ~10% of the time to avoid console spam
+        console.log("Keeping screen share active with aggressive prevention")
+      }
+    }, 1000)
+
+    // Return cleanup function
+    return {
+      cleanup: () => {
+        clearInterval(keepAliveInterval)
+
+        // Restore original properties if they existed
+        if (originalHidden) {
+          Object.defineProperty(Document.prototype, "hidden", originalHidden)
+        }
+
+        if (originalVisibilityState) {
+          Object.defineProperty(Document.prototype, "visibilityState", originalVisibilityState)
+        }
+
+        console.log("Cleaned up aggressive background prevention")
+      },
+    }
+  }
+
+  // Replace the existing startScreenShare function with this improved version
   const startScreenShare = async () => {
     if (!activeCall || !activeCall.peerConnection) {
       toast({
@@ -747,7 +803,10 @@ export default function Home() {
 
     try {
       setIsLoading(true)
-      console.log("Starting screen sharing...")
+      console.log("Starting screen sharing with canvas technique and aggressive prevention...")
+
+      // Apply aggressive background prevention
+      aggressivePreventionRef.current = applyAggressiveBackgroundPrevention()
 
       // Get screen sharing stream with optimized options
       const stream = await navigator.mediaDevices.getDisplayMedia({
@@ -756,54 +815,103 @@ export default function Home() {
           ...({
             cursor: "always",
             displaySurface: "monitor",
-            // Add these properties for better performance
-            frameRate: { ideal: 15, max: 30 }, // Lower framerate to reduce CPU usage
+            frameRate: { ideal: 15, max: 30 },
             width: { max: 1920 },
             height: { max: 1080 },
-            resizeMode: "crop-and-scale", // Allow browser to optimize resolution
           } as unknown as MediaTrackConstraints),
         },
         audio: true, // Try to capture audio from the screen share if available
       })
 
+      // Create a hidden video element to receive the screen capture
+      const video = document.createElement("video")
+      video.srcObject = stream
+      video.autoplay = true
+      video.muted = true
+      video.style.display = "none"
+      document.body.appendChild(video)
+
+      // Create a canvas element that will be used for continuous capture
+      const canvas = document.createElement("canvas")
+      canvas.style.display = "none"
+      document.body.appendChild(canvas)
+
+      // Wait for video metadata to set canvas dimensions
+      await new Promise<void>((resolve) => {
+        video.onloadedmetadata = () => {
+          canvas.width = video.videoWidth
+          canvas.height = video.videoHeight
+          resolve()
+        }
+
+        // Fallback if metadata doesn't load
+        setTimeout(() => resolve(), 1000)
+      })
+
+      await video.play()
+
+      const ctx = canvas.getContext("2d", { alpha: false })
+      if (!ctx) {
+        throw new Error("Could not get canvas context")
+      }
+
+      // Create a stream from the canvas
+      const canvasStream = canvas.captureStream(30) // 30fps
+
+      // Add audio tracks from the original stream to the canvas stream
+      stream.getAudioTracks().forEach((track) => {
+        canvasStream.addTrack(track)
+      })
+
+      // Set up the drawing loop that will keep running even when tab is inactive
+      const drawingLoopId = setInterval(() => {
+        try {
+          if (video.readyState >= 2) {
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+          }
+        } catch (e) {
+          console.error("Error in screen sharing drawing loop:", e)
+        }
+      }, 1000 / 30) // ~30fps
+
       // Add a track ended listener to handle when user stops sharing via browser UI
       const videoTrack = stream.getVideoTracks()[0]
       if (videoTrack) {
-        // Set higher priority for this track
-        if (videoTrack.contentHint !== undefined) {
-          videoTrack.contentHint = "detail" // Hint that this track needs high quality
-        }
-
-        // Set up track ended listener
         videoTrack.onended = () => {
+          clearInterval(drawingLoopId)
+          document.body.removeChild(video)
+          document.body.removeChild(canvas)
           stopScreenShare()
         }
-
-        // Log track constraints for debugging
-        console.log("Screen sharing track settings:", videoTrack.getSettings())
       }
 
       // Save the current stream to restore later
       setPreviousStream(localStream)
 
+      // Store references for cleanup
+      const screenShareRefs = {
+        originalStream: stream,
+        video,
+        canvas,
+        drawingLoopId,
+      }
+
+      // Store in a ref for later cleanup
+      screenShareRefsRef.current = screenShareRefs
+
       // Set the screen stream
-      setScreenStream(stream)
-      setLocalStream(stream)
+      setScreenStream(canvasStream)
+      setLocalStream(canvasStream)
       setIsScreenSharing(true)
 
       // Update the local video display
       if (localVideoRef.current) {
-        // When screen sharing, we don't need to display the local video in the PiP
-        // The video element still needs the stream for the call to work
-        localVideoRef.current.srcObject = stream
-
-        // Hide the local video element when screen sharing
-        // (This is a backup in case the conditional rendering doesn't work)
+        localVideoRef.current.srcObject = canvasStream
         localVideoRef.current.style.display = "none"
       }
 
       // Update the remote stream
-      await updateRemoteStream(stream)
+      await updateRemoteStream(canvasStream)
 
       // Set document title to indicate screen sharing is active
       const originalTitle = document.title
@@ -815,27 +923,75 @@ export default function Home() {
       setIsLoading(false)
       toast({
         title: "Screen Sharing Started",
-        description: "Your screen is now being shared",
+        description: "Your screen is now being shared with maximum background prevention",
       })
+
+      // Add a class to indicate screen sharing is active
+      document.body.classList.add("screen-sharing-active")
+
+      return canvasStream
     } catch (error) {
       console.error("Error starting screen share:", error)
+
+      // Clean up aggressive prevention if there was an error
+      if (aggressivePreventionRef.current) {
+        aggressivePreventionRef.current.cleanup()
+        aggressivePreventionRef.current = null
+      }
+
       setIsLoading(false)
       toast({
         title: "Screen Sharing Failed",
         description: "Failed to start screen sharing. Please try again.",
         variant: "destructive",
       })
+      return null
     }
   }
 
-  // Add this new function after startScreenShare
-  // Stop screen sharing
+  // Update the stopScreenShare function to clean up the canvas-based sharing
   const stopScreenShare = async () => {
     if (!screenStream) return
 
     try {
       setIsLoading(true)
       console.log("Stopping screen sharing...")
+
+      // Clean up aggressive prevention
+      if (aggressivePreventionRef.current) {
+        aggressivePreventionRef.current.cleanup()
+        aggressivePreventionRef.current = null
+      }
+
+      // Clean up canvas-based screen sharing resources
+      if (screenShareRefsRef.current) {
+        const { originalStream, video, canvas, drawingLoopId } = screenShareRefsRef.current
+
+        // Stop the drawing loop
+        if (drawingLoopId) {
+          clearInterval(drawingLoopId)
+        }
+
+        // Remove the hidden elements
+        if (video && video.parentNode) {
+          video.srcObject = null
+          video.parentNode.removeChild(video)
+        }
+
+        if (canvas && canvas.parentNode) {
+          canvas.parentNode.removeChild(canvas)
+        }
+
+        // Stop all tracks in the original stream
+        if (originalStream) {
+          originalStream.getTracks().forEach((track) => {
+            track.stop()
+          })
+        }
+
+        // Reset the ref
+        screenShareRefsRef.current = null
+      }
 
       // Stop all tracks in the screen stream
       screenStream.getTracks().forEach((track) => {
@@ -849,8 +1005,6 @@ export default function Home() {
         // Update the local video display
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = previousStream || cameraStream
-
-          // Restore the display of the local video element
           localVideoRef.current.style.display = "block"
         }
 
@@ -863,6 +1017,7 @@ export default function Home() {
         // Update the local video display
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = cameraStream
+          localVideoRef.current.style.display = "block"
         }
 
         // Update the remote stream
@@ -1370,6 +1525,13 @@ export default function Home() {
         clearInterval(keepAliveIntervalRef.current)
         keepAliveIntervalRef.current = null
       }
+
+      // Clean up aggressive prevention if component unmounts
+      if (aggressivePreventionRef.current) {
+        aggressivePreventionRef.current.cleanup()
+        aggressivePreventionRef.current = null
+      }
+
       document.body.classList.remove("screen-sharing-active")
       document.body.classList.remove("hidden-screen-sharing")
 
@@ -1411,7 +1573,7 @@ export default function Home() {
                   ref={remoteVideoRef}
                   autoPlay
                   playsInline
-                  className="w-full h-full object-cover"
+                  className={`w-full h-full object-cover ${shouldMirrorStream() ? "scale-x-[-1]" : ""}`}
                 />
               ) : (
                 <div

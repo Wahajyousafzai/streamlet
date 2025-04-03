@@ -1,13 +1,7 @@
 "use client"
 
-import { useRef, useState, useEffect } from "react"
-import { Mic, MicOff, Video, VideoOff, Phone, PhoneOff, Image, Share, SwitchCamera, X } from "lucide-react"
-import { 
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger
-} from "@/components/ui/tooltip"
+import { useRef, useState } from "react"
+import { Mic, MicOff, Video, VideoOff, Phone, PhoneOff, Image, Share } from "lucide-react"
 
 interface ControlBarProps {
   remoteStream: MediaStream | null
@@ -26,6 +20,9 @@ interface ControlBarProps {
   hasMultipleCameras?: boolean
   switchCamera?: () => void
   currentCameraName?: string
+  isScreenSharing?: boolean
+  startScreenShare?: () => void
+  stopScreenShare?: () => void
 }
 
 export default function ControlBar({
@@ -45,6 +42,9 @@ export default function ControlBar({
   hasMultipleCameras = false,
   switchCamera = () => {},
   currentCameraName = "Camera",
+  isScreenSharing = false,
+  startScreenShare = () => {},
+  stopScreenShare = () => {},
 }: ControlBarProps) {
   const [showBackgroundOptions, setShowBackgroundOptions] = useState(false)
   const backgroundRef = useRef<HTMLDivElement>(null)
@@ -57,152 +57,115 @@ export default function ControlBar({
     { id: "/background/mountains.avif", label: "Mountains" },
   ]
 
-  // Close background menu when clicking outside
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (backgroundRef.current && !backgroundRef.current.contains(event.target as Node)) {
-        setShowBackgroundOptions(false)
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside)
-    return () => document.removeEventListener("mousedown", handleClickOutside)
-  }, [])
-
-  // Controls UI consistency based on state
-  const buttonBaseClass = "p-3 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-opacity-50"
-  const activeButtonClass = "bg-blue-500 text-white hover:bg-blue-600"
-  const inactiveButtonClass = "bg-gray-100 text-gray-700 hover:bg-gray-200"
-  const disabledButtonClass = "bg-gray-200 text-gray-500 cursor-not-allowed"
-
   return (
-    <div className="fixed bottom-4 left-1/2 transform -translate-x-1/2 flex items-center justify-center space-x-4 p-3 bg-white bg-opacity-90 backdrop-blur-sm rounded-full shadow-lg">
+    <div className="flex items-center justify-center space-x-3 bg-transparent">
       {/* Audio Button */}
-      <TooltipProvider>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              onClick={toggleAudio}
-              disabled={isLoading}
-              className={`${buttonBaseClass} ${
-                isAudioMuted ? inactiveButtonClass : activeButtonClass
-              } ${isLoading ? disabledButtonClass : ""}`}
-              aria-label={isAudioMuted ? "Unmute" : "Mute"}
-            >
-              {isAudioMuted ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
-            </button>
-          </TooltipTrigger>
-          <TooltipContent>
-            {isAudioMuted ? "Unmute" : "Mute"}
-          </TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
+      <button
+        onClick={toggleAudio}
+        disabled={isLoading}
+        className={`p-3 rounded-full ${
+          isAudioMuted ? "bg-gray-200 text-gray-700" : "bg-gray-100 text-gray-700"
+        } hover:bg-gray-200 transition-colors`}
+        aria-label={isAudioMuted ? "Unmute" : "Mute"}
+      >
+        {isAudioMuted ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
+      </button>
 
       {/* Video Button */}
-      <TooltipProvider>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              onClick={toggleVideo}
-              disabled={isLoading}
-              className={`${buttonBaseClass} ${
-                isVideoEnabled ? activeButtonClass : inactiveButtonClass
-              } ${isLoading ? disabledButtonClass : ""}`}
-              aria-label={isVideoEnabled ? "Turn off camera" : "Turn on camera"}
-            >
-              {!isVideoEnabled ? <VideoOff className="h-5 w-5" /> : <Video className="h-5 w-5" />}
-            </button>
-          </TooltipTrigger>
-          <TooltipContent>
-            {isVideoEnabled ? "Turn off camera" : "Turn on camera"}
-          </TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
+      <button
+        onClick={toggleVideo}
+        disabled={isLoading}
+        className={`p-3 rounded-full ${
+          !isVideoEnabled ? "bg-gray-200 text-gray-700" : "bg-gray-100 text-gray-700"
+        } hover:bg-gray-200 transition-colors`}
+        aria-label={isVideoEnabled ? "Turn off camera" : "Turn on camera"}
+      >
+        {!isVideoEnabled ? <VideoOff className="h-5 w-5" /> : <Video className="h-5 w-5" />}
+      </button>
 
       {/* Camera Switch Button - Only show if device has multiple cameras */}
       {hasMultipleCameras && isVideoEnabled && (
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={switchCamera}
-                disabled={isLoading || !isVideoEnabled}
-                className={`${buttonBaseClass} ${inactiveButtonClass} ${
-                  isLoading || !isVideoEnabled ? disabledButtonClass : ""
-                }`}
-                aria-label="Switch camera"
-              >
-                <SwitchCamera className="h-5 w-5" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>
-              {`Switch to next camera (Current: ${currentCameraName})`}
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
+        <button
+          onClick={switchCamera}
+          disabled={isLoading || !isVideoEnabled}
+          className="p-3 rounded-full bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
+          aria-label="Switch camera"
+          title={`Switch to next camera (Current: ${currentCameraName})`}
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="h-5 w-5"
+          >
+            <path d="M3 7v2a3 3 0 0 0 3 3h12a3 3 0 0 0 3-3V7"></path>
+            <path d="M9 17v-2a3 3 0 0 1 6 0v2"></path>
+            <path d="M3 17h18"></path>
+          </svg>
+        </button>
       )}
 
       {/* Call Button */}
-      <TooltipProvider>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              onClick={!remoteStream ? startCall : endCall}
-              disabled={!remoteStream 
-                ? (isLoading || !isVideoEnabled || callStatus !== "idle") 
-                : (isLoading || callStatus === "ending")}
-              className={`${buttonBaseClass} ${
-                !remoteStream
-                  ? (isLoading || !isVideoEnabled || callStatus !== "idle"
-                      ? disabledButtonClass
-                      : "bg-green-500 text-white hover:bg-green-600")
-                  : (isLoading || callStatus === "ending"
-                      ? disabledButtonClass
-                      : "bg-red-500 text-white hover:bg-red-600")
-              }`}
-              aria-label={!remoteStream ? "Start call" : "End call"}
-            >
-              {!remoteStream ? <Phone className="h-5 w-5" /> : <PhoneOff className="h-5 w-5" />}
-            </button>
-          </TooltipTrigger>
-          <TooltipContent>
-            {!remoteStream ? "Start call" : "End call"}
-          </TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
+      {!remoteStream ? (
+        <button
+          onClick={startCall}
+          disabled={isLoading || !isVideoEnabled || callStatus !== "idle"}
+          className={`p-3 rounded-full ${
+            isLoading || !isVideoEnabled || callStatus !== "idle"
+              ? "bg-gray-200 text-gray-500 cursor-not-allowed"
+              : "bg-green-500 text-white hover:bg-green-600"
+          } transition-colors`}
+          aria-label="Start call"
+        >
+          <Phone className="h-5 w-5" />
+        </button>
+      ) : (
+        <button
+          onClick={endCall}
+          disabled={isLoading || callStatus === "ending"}
+          className={`p-3 rounded-full ${
+            isLoading || callStatus === "ending"
+              ? "bg-gray-200 text-gray-500 cursor-not-allowed"
+              : "bg-red-500 text-white hover:bg-red-600"
+          } transition-colors`}
+          aria-label="End call"
+        >
+          <PhoneOff className="h-5 w-5" />
+        </button>
+      )}
 
       {/* Background Button */}
       <div className="relative" ref={backgroundRef}>
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => setShowBackgroundOptions(!showBackgroundOptions)}
-                disabled={isLoading}
-                className={`${buttonBaseClass} ${
-                  backgroundRemovalEnabled ? activeButtonClass : inactiveButtonClass
-                } ${isLoading ? disabledButtonClass : ""}`}
-                aria-label="Background options"
-              >
-                <Image className="h-5 w-5" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>
-              Background options
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
+        <button
+          onClick={() => setShowBackgroundOptions(!showBackgroundOptions)}
+          disabled={isLoading}
+          className="p-3 rounded-full bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
+          aria-label="Background options"
+        >
+          <Image className="h-5 w-5" />
+        </button>
 
         {/* Background Options Dropdown */}
         {showBackgroundOptions && (
-          <div className="absolute bottom-full mb-3 left-1/2 transform -translate-x-1/2 bg-white rounded-lg shadow-lg p-3 w-64 z-10">
+          <div className="absolute bottom-full mb-2 left-1/2 transform -translate-x-1/2 bg-white rounded-lg shadow-lg p-3 w-64 z-10">
             <div className="flex justify-between items-center mb-2 pb-2 border-b border-gray-200">
               <h3 className="text-sm font-medium text-gray-700">Background Settings</h3>
-              <button 
-                onClick={() => setShowBackgroundOptions(false)} 
-                className="text-gray-400 hover:text-gray-600 rounded-full p-1 hover:bg-gray-100"
-                aria-label="Close"
-              >
-                <X className="h-4 w-4" />
+              <button onClick={() => setShowBackgroundOptions(false)} className="text-gray-400 hover:text-gray-600">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-4 w-4"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
               </button>
             </div>
 
@@ -211,6 +174,7 @@ export default function ControlBar({
               <span className="text-sm text-gray-700">Background Removal</span>
               <button
                 onClick={() => {
+                  // Only toggle if not already in a loading state
                   if (!isLoading) {
                     setBackgroundRemovalEnabled((prev) => !prev)
                   }
@@ -218,7 +182,6 @@ export default function ControlBar({
                 className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
                   backgroundRemovalEnabled ? "bg-blue-600" : "bg-gray-200"
                 }`}
-                aria-label={backgroundRemovalEnabled ? "Disable background removal" : "Enable background removal"}
               >
                 <span
                   className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
@@ -241,8 +204,6 @@ export default function ControlBar({
                           ? "bg-blue-50 border border-blue-200"
                           : "bg-gray-50 border border-gray-200 hover:bg-gray-100"
                       }`}
-                      aria-label={`Select ${bg.label} background`}
-                      aria-pressed={selectedBackground === bg.id}
                     >
                       <div className="w-full h-12 bg-gray-200 rounded mb-1 overflow-hidden">
                         <img
@@ -250,11 +211,11 @@ export default function ControlBar({
                           alt={bg.label}
                           className="w-full h-full object-cover"
                           onError={(e) => {
-                            e.currentTarget.src = "/placeholder.svg"
+                            e.currentTarget.src = "/placeholder.svg?height=48&width=64"
                           }}
                         />
                       </div>
-                      <span className="text-xs font-medium">{bg.label}</span>
+                      <span className="text-xs">{bg.label}</span>
                     </button>
                   ))}
                 </div>
@@ -265,26 +226,24 @@ export default function ControlBar({
       </div>
 
       {/* Share Screen Button */}
-      <TooltipProvider>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              disabled={isLoading || callStatus !== "connected"}
-              className={`${buttonBaseClass} ${
-                isLoading || callStatus !== "connected"
-                  ? disabledButtonClass
-                  : inactiveButtonClass
-              }`}
-              aria-label="Share screen"
-            >
-              <Share className="h-5 w-5" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent>
-            Share screen
-          </TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
+      {callStatus === "connected" && (
+        <button
+          onClick={isScreenSharing ? stopScreenShare : startScreenShare}
+          disabled={isLoading}
+          className={`p-3 rounded-full ${
+            isLoading
+              ? "bg-gray-200 text-gray-500 cursor-not-allowed"
+              : isScreenSharing
+                ? "bg-blue-500 text-white hover:bg-blue-600"
+                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+          } transition-colors`}
+          aria-label={isScreenSharing ? "Stop sharing" : "Share screen"}
+          title={isScreenSharing ? "Stop sharing screen" : "Share your screen"}
+        >
+          <Share className="h-5 w-5" />
+        </button>
+      )}
     </div>
   )
 }
+

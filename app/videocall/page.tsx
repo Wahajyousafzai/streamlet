@@ -32,6 +32,11 @@ export default function Home() {
   // Ref to track if we need to update the remote stream
   const needsRemoteUpdateRef = useRef<boolean>(false)
 
+  // Add these new state variables after the other state declarations (around line 30)
+  const [isScreenSharing, setIsScreenSharing] = useState(false)
+  const [screenStream, setScreenStream] = useState<MediaStream | null>(null)
+  const [previousStream, setPreviousStream] = useState<MediaStream | null>(null)
+
   // Use the camera switch hook
   const {
     stream: cameraStream,
@@ -670,6 +675,133 @@ export default function Home() {
     }
   }
 
+  // Add this new function before the startCall function
+  // Start screen sharing
+  const startScreenShare = async () => {
+    if (!activeCall || !activeCall.peerConnection) {
+      toast({
+        title: "No Active Call",
+        description: "You must be in a call to share your screen",
+        variant: "destructive",
+      })
+      return
+    }
+
+    try {
+      setIsLoading(true)
+      console.log("Starting screen sharing...")
+
+      // Get screen sharing stream
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: {
+          // Use type assertion to avoid TypeScript error with cursor property
+          ...({
+            cursor: "always",
+            displaySurface: "monitor",
+          } as unknown as MediaTrackConstraints),
+        },
+        audio: true, // Try to capture audio from the screen share if available
+      })
+
+      // Save the current stream to restore later
+      setPreviousStream(localStream)
+
+      // Set the screen stream
+      setScreenStream(stream)
+      setLocalStream(stream)
+      setIsScreenSharing(true)
+
+      // Update the local video display
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream
+      }
+
+      // Update the remote stream
+      await updateRemoteStream(stream)
+
+      // Add event listener for when user stops sharing via the browser UI
+      const videoTrack = stream.getVideoTracks()[0]
+      if (videoTrack) {
+        videoTrack.onended = () => {
+          stopScreenShare()
+        }
+      }
+
+      setIsLoading(false)
+      toast({
+        title: "Screen Sharing Started",
+        description: "Your screen is now being shared",
+      })
+    } catch (error) {
+      console.error("Error starting screen share:", error)
+      setIsLoading(false)
+      toast({
+        title: "Screen Sharing Failed",
+        description: "Failed to start screen sharing. Please try again.",
+        variant: "destructive",
+      })
+    }
+  }
+
+  // Add this new function after startScreenShare
+  // Stop screen sharing
+  const stopScreenShare = async () => {
+    if (!screenStream) return
+
+    try {
+      setIsLoading(true)
+      console.log("Stopping screen sharing...")
+
+      // Stop all tracks in the screen stream
+      screenStream.getTracks().forEach((track) => {
+        track.stop()
+      })
+
+      // Restore the previous stream if available
+      if (previousStream) {
+        setLocalStream(previousStream)
+
+        // Update the local video display
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = previousStream
+        }
+
+        // Update the remote stream
+        await updateRemoteStream(previousStream)
+      } else if (cameraStream) {
+        // Fallback to camera stream if previous stream is not available
+        setLocalStream(cameraStream)
+
+        // Update the local video display
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = cameraStream
+        }
+
+        // Update the remote stream
+        await updateRemoteStream(cameraStream)
+      }
+
+      // Reset state
+      setScreenStream(null)
+      setPreviousStream(null)
+      setIsScreenSharing(false)
+      setIsLoading(false)
+
+      toast({
+        title: "Screen Sharing Stopped",
+        description: "Returned to camera view",
+      })
+    } catch (error) {
+      console.error("Error stopping screen share:", error)
+      setIsLoading(false)
+      toast({
+        title: "Error",
+        description: "Failed to stop screen sharing",
+        variant: "destructive",
+      })
+    }
+  }
+
   // Start a call
   const startCall = async () => {
     if (!peer) {
@@ -846,6 +978,16 @@ export default function Home() {
       }
     }
     setActiveCall(null)
+
+    // Add this to the endCall function, right after the "Close the active call" section
+    // Stop screen sharing if active when call ends
+    if (isScreenSharing && screenStream) {
+      screenStream.getTracks().forEach((track) => {
+        track.stop()
+      })
+      setScreenStream(null)
+      setIsScreenSharing(false)
+    }
 
     // Get references to all connections
     const currentPeer = peer
@@ -1170,7 +1312,7 @@ export default function Home() {
                   ref={remoteVideoRef}
                   autoPlay
                   playsInline
-                  className="w-full h-full object-cover"
+                  className={`w-full h-full object-cover ${shouldMirrorStream() ? "scale-x-[-1]" : ""}`}
                 />
               ) : (
                 <div
@@ -1237,6 +1379,9 @@ export default function Home() {
                 hasMultipleCameras={hasMultipleCameras}
                 switchCamera={handleSwitchCamera}
                 currentCameraName={currentCameraName}
+                isScreenSharing={isScreenSharing}
+                startScreenShare={startScreenShare}
+                stopScreenShare={stopScreenShare}
               />
             </div>
           </div>

@@ -1170,7 +1170,7 @@ export default function Home() {
                   ref={remoteVideoRef}
                   autoPlay
                   playsInline
-                  className={`w-full h-full object-cover ${shouldMirrorStream() ? "scale-x-[-1]" : ""}`}
+                  className="w-full h-full object-cover"
                 />
               ) : (
                 <div
